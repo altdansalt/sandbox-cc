@@ -1,0 +1,5 @@
+site/index.html
+site/*.md
+build/
+*.o
+*.wasm
