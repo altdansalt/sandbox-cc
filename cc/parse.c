@@ -1472,7 +1472,10 @@ write_gvar_data(Relocation *cur, Initializer *init, Type *ty, char *buf, int off
   }
 
   char **label = NULL;
-  uint64_t val = eval2(init->expr, &label);
+  add_type(init->expr);
+  // A floating initializer for an integer object converts with the object's
+  // signedness (see eval2's ND_CAST); a bare (int64_t)double would be UB.
+  uint64_t val = eval2(is_flonum(init->expr->ty) ? new_cast(init->expr, ty) : init->expr, &label);
 
   if (!label) {
     write_buf(buf + offset, val, ty->size);
@@ -1903,7 +1906,19 @@ static int64_t eval2(Node *node, char ***label) {
   case ND_LOGOR:
     return eval(node->lhs) || eval(node->rhs);
   case ND_CAST: {
-    int64_t val = eval2(node->lhs, label);
+    int64_t val;
+    if (is_flonum(node->lhs->ty) && is_integer(node->ty)) {
+      // Convert with the destination's signedness and explicit range handling
+      // (a plain (int64_t)double is undefined out of range and differs between
+      // x86-64, which yields 0x8000000000000000, and wasm32, which saturates).
+      double d = eval_double(node->lhs);
+      if (node->ty->is_unsigned)
+        val = (d != d || d <= -1.0 || d >= 18446744073709551616.0) ? 0 : (int64_t)(uint64_t)d;
+      else
+        val = (d != d || d < -9223372036854775808.0 || d >= 9223372036854775808.0) ? INT64_MIN : (int64_t)d;
+    } else {
+      val = eval2(node->lhs, label);
+    }
     if (is_integer(node->ty)) {
       switch (node->ty->size) {
       case 1: return node->ty->is_unsigned ? (uint8_t)val : (int8_t)val;

@@ -16,8 +16,10 @@ static Obj *current_fn;
 // (significand with explicit integer bit; sign+exponent; upper 48 bits zero).
 // On the native x86-64 build `long double` already is that format. When the
 // compiler itself runs as wasm32, `long double` is IEEE binary128, so we
-// convert: same exponent bias (16383), 112-bit fraction narrowed to 63 bits
-// with round-to-nearest-even.
+// convert: same exponent range (bias 16383, same minimum normal exponent),
+// 112-bit fraction narrowed to 63 bits with round-to-nearest-even, carrying
+// into the exponent when rounding overflows (subnormal -> normal, normal ->
+// next binade, maximum -> infinity). NaN payloads are kept quiet and nonzero.
 static void x87_bits(long double v, uint64_t out[2]) {
 #ifndef __wasm__
   union { long double f80; uint64_t u64[2]; } u;
@@ -30,25 +32,32 @@ static void x87_bits(long double v, uint64_t out[2]) {
   uint64_t lo = u.u64[0], hi = u.u64[1];
   uint64_t sign = hi >> 63;
   uint64_t exp = (hi >> 48) & 0x7fff;
-  // 112-bit fraction: hi[47:0] (upper 48 bits) and lo (lower 64 bits).
-  // Keep the top 63 fraction bits: hi[47:0]<<15 | lo>>49.
+  // 112-bit fraction = hi[47:0] (upper 48 bits) . lo (lower 64 bits).
+  // Keep the top 63 fraction bits; `rest` is the 49 discarded bits.
   uint64_t frac63 = ((hi & 0xffffffffffffULL) << 15) | (lo >> 49);
   uint64_t rest = lo & ((1ULL << 49) - 1);
   uint64_t half = 1ULL << 48;
   uint64_t sig;
   if (exp == 0x7fff) {
-    // inf or nan: x87 has explicit integer bit set; keep a quiet-nan payload bit.
-    sig = (1ULL << 63) | frac63;
-    if (frac63 && !(sig & (1ULL << 62)))
-      sig |= 1ULL << 62;
-  } else if (exp == 0) {
-    // zero or binary128 subnormal (below x87 subnormal range's precision; flush).
-    sig = 0;
-    if (frac63 || rest) { sig = 0; exp = 0; }
+    if (frac63 == 0 && rest == 0) {
+      sig = 1ULL << 63;                       // infinity
+    } else {
+      sig = (1ULL << 63) | (1ULL << 62) | frac63; // quiet NaN, payload kept
+    }
   } else {
-    sig = (1ULL << 63) | frac63;
-    if (rest > half || (rest == half && (sig & 1)))
-      if (++sig == 0) { sig = 1ULL << 63; exp++; }
+    // exp == 0: subnormal in both formats (integer bit 0); otherwise normal.
+    sig = (exp == 0 ? 0 : (1ULL << 63)) | frac63;
+    if (rest > half || (rest == half && (sig & 1))) {
+      sig++;
+      if (exp == 0 && sig == (1ULL << 63)) {
+        exp = 1;                              // subnormal rounded up to min normal
+      } else if (exp != 0 && sig == 0) {
+        sig = 1ULL << 63;                     // carry out of the significand
+        exp++;
+        if (exp == 0x7fff)
+          sig = 1ULL << 63;                   // overflow to infinity
+      }
+    }
   }
   out[0] = sig;
   out[1] = (sign << 15) | exp;
@@ -1453,7 +1462,7 @@ static void emit_data(Obj *prog) {
       int pos = 0;
       while (pos < var->ty->size) {
         if (rel && rel->offset == pos) {
-          println("  .quad %s%+ld", *rel->label, rel->addend);
+          println("  .quad %s%+" PRId64, *rel->label, rel->addend);
           rel = rel->next;
           pos += 8;
         } else {

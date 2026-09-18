@@ -51,3 +51,21 @@ Tools: prebuilt `x86_64-lfi-clang` v0.12 (clang 23 + musl sysroot); `lfi-runtime
 | LFI, verified on each run | 2.34 s | 23.6 ms (2.2 ms without `-v`) |
 | wazero, compiler (JIT per run, no cache) | 1.49 s | 93 ms |
 | wazero, interpreter | 30.7 s | 20 ms |
+
+## Codex review 1 (chibicc port): findings and fixes
+`reviews/codex-review-1.md`. Codex compared the port against upstream and tested the native and WASI binaries; it found four reproducible code-generation differences I had missed, all host-`long`/host-float leaks of the same family as the ones fixed earlier.
+
+| # | sev | finding | fix |
+|---|---|---|---|
+| 1 | high | `Relocation.addend` is host `long`: `char *p = a + 0x100000000L;` emitted `.quad a+0` from wasm | `int64_t`, `PRId64` (`chibicc.h`, `codegen.c`); test `tests/port/reloc_addend.c` |
+| 2 | high | `x87_bits()` flushed binary128 subnormals to zero (x87 has the same minimum exponent, so they are representable) | rewritten: subnormals keep the fraction, rounding may carry into the exponent (subnormal→min normal, max→inf); test `tests/port/x87_subnormal.c` |
+| 3 | high | literals are parsed with the host `strtold`: native rounds once to x87 (64-bit significand), wasm rounds to binary128 and then to x87, a double rounding. `double d = 0x1.00000000000008001p0;` differs by one ulp | **open**, see below: the compiler must parse floating literals itself |
+| 4 | high | `unsigned long a = 0x1p63;` folded through `(int64_t)double`, UB: x86 gives 0x8000000000000000, wasm saturates to 0x7fff… | `eval2` ND_CAST and global initializers convert with the destination's signedness and explicit range checks (`parse.c`); test `tests/port/fold_unsigned.c`. For values ≥ 2^63 native upstream produced the x86 "integer indefinite", i.e. it was wrong; both builds now agree on the correct value |
+| 5 | high (claim) | `tools/bench.sh` ran `lfi-run` without `-r`, i.e. with the whole filesystem mapped, and mounted the repo writable into wazero | restricted LFI dirs (`-r --dir … --wd /`), read-only mounts + one output dir everywhere |
+| 6 | medium | default include dir is `dirname(argv[0])/include`; wazero's argv[0] is the module path | documented; pass `-I` |
+| 7 | medium | `__DATE__`/`__TIME__`/`__TIMESTAMP__` from the clock and file mtimes | `SOURCE_DATE_EPOCH` honoured (gmtime) in both compilers |
+| 8 | low | NaN with all-discarded payload became infinity in `x87_bits()` | fixed with #2 |
+
+Upstream limitations (not port regressions), kept as-is: `eval_double` folds in binary64 even for `long double`; static `long double x = 1.0L;` is unsupported ("internal error").
+
+After the fixes: exp1 41/41 identical, exp3 11/11 identical, `tests/port/`: 3/4 identical, `literals.c` still differs (finding 3).

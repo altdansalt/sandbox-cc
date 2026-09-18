@@ -1033,6 +1033,9 @@ static Token *timestamp_macro(Token *tmpl) {
     return new_str_token("??? ??? ?? ??:??:?? ????", tmpl);
 
   char buf[30];
+  char *sde = getenv("SOURCE_DATE_EPOCH");
+  if (sde)
+    st.st_mtime = strtoll(sde, NULL, 10);
   ctime_r(&st.st_mtime, buf);
   buf[24] = '\0';
   return new_str_token(buf, tmpl);
@@ -1113,6 +1116,11 @@ void init_macros(void) {
 
   time_t now = time(NULL);
   struct tm *tm = localtime(&now);
+  char *sde = getenv("SOURCE_DATE_EPOCH");  // reproducible-builds.org convention
+  if (sde) {
+    now = strtoll(sde, NULL, 10);
+    tm = gmtime(&now);
+  }
   define_macro("__DATE__", format_date(tm));
   define_macro("__TIME__", format_time(tm));
 }

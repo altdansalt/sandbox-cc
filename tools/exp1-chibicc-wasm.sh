@@ -15,4 +15,12 @@ for src in chibicc/test/*.c; do
   if diff <(grep -v '^  .file' $OUT/$n.native.s) <(grep -v '^  .file' $OUT/$n.wasm.s) >$OUT/$n.diff; then same=$((same+1)); else differ=$((differ+1)); echo "DIFF $n ($(wc -l <$OUT/$n.diff) lines)"; fi
   if gcc -pthread -o $OUT/$n.exe $OUT/$n.wasm.s -xc chibicc/test/common 2>/dev/null && $OUT/$n.exe >$OUT/$n.run 2>&1; then pass=$((pass+1)); else fail=$((fail+1)); echo "FAIL $n"; fi
 done
-echo "asm identical: $same, differ: $differ; run pass: $pass, fail: $fail"
+# port regression tests (from the codex reviews): assembly must be identical, no run
+psame=0; pdiff=0
+for src in tests/port/*.c; do
+  n=$(basename $src .c)
+  ./chibicc/chibicc -Ichibicc/include -S -o $OUT/port-$n.native.s $src 2>$OUT/port-$n.native.err
+  wazero run -mount=$ROOT/tests/port:/port:ro -mount=$ROOT/chibicc:/chibicc:ro -mount=$ROOT/$OUT:/out build/chibicc/chibicc.wasm -I/chibicc/include -S -o /out/port-$n.wasm.s /port/$n.c 2>$OUT/port-$n.wasm.err
+  if diff <(grep -v '^  .file' $OUT/port-$n.native.s) <(grep -v '^  .file' $OUT/port-$n.wasm.s) >$OUT/port-$n.diff; then psame=$((psame+1)); else pdiff=$((pdiff+1)); echo "DIFF port/$n ($(wc -l <$OUT/port-$n.diff) lines)"; fi
+done
+echo "asm identical: $same, differ: $differ; run pass: $pass, fail: $fail; port tests identical: $psame, differ: $pdiff"

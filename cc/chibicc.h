@@ -174,7 +174,7 @@ struct Relocation {
   Relocation *next;
   int offset;
   char **label;
-  long addend;
+  int64_t addend;
 };
 
 // AST node
