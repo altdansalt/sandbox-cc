@@ -11,6 +11,50 @@ static char *argreg32[] = {"%edi", "%esi", "%edx", "%ecx", "%r8d", "%r9d"};
 static char *argreg64[] = {"%rdi", "%rsi", "%rdx", "%rcx", "%r8", "%r9"};
 static Obj *current_fn;
 
+
+// Bits of an x87 80-bit extended value, as two little-endian 64-bit words
+// (significand with explicit integer bit; sign+exponent; upper 48 bits zero).
+// On the native x86-64 build `long double` already is that format. When the
+// compiler itself runs as wasm32, `long double` is IEEE binary128, so we
+// convert: same exponent bias (16383), 112-bit fraction narrowed to 63 bits
+// with round-to-nearest-even.
+static void x87_bits(long double v, uint64_t out[2]) {
+#ifndef __wasm__
+  union { long double f80; uint64_t u64[2]; } u;
+  memset(&u, 0, sizeof(u));
+  u.f80 = v;
+  out[0] = u.u64[0];
+  out[1] = u.u64[1];
+#else
+  union { long double f128; uint64_t u64[2]; } u = { v };
+  uint64_t lo = u.u64[0], hi = u.u64[1];
+  uint64_t sign = hi >> 63;
+  uint64_t exp = (hi >> 48) & 0x7fff;
+  // 112-bit fraction: hi[47:0] (upper 48 bits) and lo (lower 64 bits).
+  // Keep the top 63 fraction bits: hi[47:0]<<15 | lo>>49.
+  uint64_t frac63 = ((hi & 0xffffffffffffULL) << 15) | (lo >> 49);
+  uint64_t rest = lo & ((1ULL << 49) - 1);
+  uint64_t half = 1ULL << 48;
+  uint64_t sig;
+  if (exp == 0x7fff) {
+    // inf or nan: x87 has explicit integer bit set; keep a quiet-nan payload bit.
+    sig = (1ULL << 63) | frac63;
+    if (frac63 && !(sig & (1ULL << 62)))
+      sig |= 1ULL << 62;
+  } else if (exp == 0) {
+    // zero or binary128 subnormal (below x87 subnormal range's precision; flush).
+    sig = 0;
+    if (frac63 || rest) { sig = 0; exp = 0; }
+  } else {
+    sig = (1ULL << 63) | frac63;
+    if (rest > half || (rest == half && (sig & 1)))
+      if (++sig == 0) { sig = 1ULL << 63; exp++; }
+  }
+  out[0] = sig;
+  out[1] = (sign << 15) | exp;
+#endif
+}
+
 static void gen_expr(Node *node);
 static void gen_stmt(Node *node);
 
@@ -699,23 +743,22 @@ static void gen_expr(Node *node) {
     switch (node->ty->kind) {
     case TY_FLOAT: {
       union { float f32; uint32_t u32; } u = { node->fval };
-      println("  mov $%u, %%eax  # float %Lf", u.u32, node->fval);
+      println("  mov $%u, %%eax  # float %f", u.u32, (double)node->fval);
       println("  movq %%rax, %%xmm0");
       return;
     }
     case TY_DOUBLE: {
       union { double f64; uint64_t u64; } u = { node->fval };
-      println("  mov $%" PRIu64 ", %%rax  # double %Lf", u.u64, node->fval);
+      println("  mov $%" PRIu64 ", %%rax  # double %f", u.u64, (double)node->fval);
       println("  movq %%rax, %%xmm0");
       return;
     }
     case TY_LDOUBLE: {
-      union { long double f80; uint64_t u64[2]; } u;
-      memset(&u, 0, sizeof(u));
-      u.f80 = node->fval;
-      println("  mov $%" PRIu64 ", %%rax  # long double %Lf", u.u64[0], node->fval);
+      uint64_t u64[2];
+      x87_bits(node->fval, u64);
+      println("  mov $%" PRIu64 ", %%rax  # long double %f", u64[0], (double)node->fval);
       println("  mov %%rax, -16(%%rsp)");
-      println("  mov $%" PRIu64 ", %%rax", u.u64[1]);
+      println("  mov $%" PRIu64 ", %%rax", u64[1]);
       println("  mov %%rax, -8(%%rsp)");
       println("  fldt -16(%%rsp)");
       return;
