@@ -378,7 +378,7 @@ static void cleanup(void) {
 }
 
 static char *create_tmpfile(void) {
-#ifdef __wasm__
+#ifdef NO_SUBPROCESS
   error("chibicc-wasm: no temporary files inside the sandbox; use -S or -E");
 #else
   char *path = strdup("/tmp/chibicc-XXXXXX");
@@ -392,7 +392,7 @@ static char *create_tmpfile(void) {
 #endif
 }
 
-#ifndef __wasm__
+#ifndef NO_SUBPROCESS
 static void run_subprocess(char **argv) {
   // If -### is given, dump the subprocess's command line.
   if (opt_hash_hash_hash) {
@@ -420,7 +420,7 @@ static void run_subprocess(char **argv) {
 static void cc1(void);
 
 static void run_cc1(int argc, char **argv, char *input, char *output) {
-#ifdef __wasm__
+#ifdef NO_SUBPROCESS
   // In-process: WASI has no fork/exec. One input file per invocation.
   static bool ran;
   if (ran)
@@ -588,7 +588,7 @@ static void cc1(void) {
 }
 
 static void assemble(char *input, char *output) {
-#ifdef __wasm__
+#ifdef NO_SUBPROCESS
   error("chibicc-wasm: no assembler inside the sandbox; use -S");
 #else
   char *cmd[] = {"as", "-c", input, "-o", output, NULL};
@@ -596,7 +596,7 @@ static void assemble(char *input, char *output) {
 #endif
 }
 
-#ifndef __wasm__
+#ifndef NO_SUBPROCESS
 static char *find_file(char *pattern) {
   char *path = NULL;
   glob_t buf = {};
@@ -615,7 +615,7 @@ bool file_exists(char *path) {
   return !stat(path, &st);
 }
 
-#ifndef __wasm__
+#ifndef NO_SUBPROCESS
 
 static char *find_libpath(void) {
   if (file_exists("/usr/lib/x86_64-linux-gnu/crti.o"))

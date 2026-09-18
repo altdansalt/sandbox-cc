@@ -1,8 +1,13 @@
 #define _POSIX_C_SOURCE 200809L
+// Sandboxed build: no fork/exec, no temp files; cc1 runs in-process (-S / -E only).
+#if defined(__wasm__) && !defined(NO_SUBPROCESS)
+#define NO_SUBPROCESS 1
+#endif
+
 #include <assert.h>
 #include <ctype.h>
 #include <errno.h>
-#ifndef __wasm__
+#ifndef NO_SUBPROCESS
 #include <glob.h>
 #endif
 #include <libgen.h>
@@ -17,7 +22,7 @@
 #include <strings.h>
 #include <sys/stat.h>
 #include <sys/types.h>
-#ifndef __wasm__
+#ifndef NO_SUBPROCESS
 #include <sys/wait.h>
 #endif
 #include <time.h>
